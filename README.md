@@ -1,6 +1,6 @@
 # F1 Data Warehouse — OLAP Demo
 
-A self-contained PostgreSQL + pgAdmin environment for demonstrating OLAP queries in a teaching context. The database is pre-loaded with Formula 1 race data.
+A self-contained PostgreSQL + pgAdmin environment for demonstrating OLAP queries. The database is pre-loaded with Formula 1 race data.
 
 ## Requirements
 
