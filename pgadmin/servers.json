@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "F1 Data Warehouse",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "f1_dw",
+      "Username": "f1user",
+      "SSLMode": "prefer"
+    }
+  }
+}
