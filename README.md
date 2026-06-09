@@ -68,106 +68,94 @@ docker compose down -v && docker compose up -d
 
 ## Sample OLAP Queries
 
-### 1. Running Points Total per Driver (Window Function)
+### 1. Ferrari Pit Stop Durations with Running Average (Window Function)
 
-Cumulative championship points after each race for a given season.
+Per-stop duration and year-to-date running average for Ferrari drivers in 2023, excluding outliers ≥ 60 s.
 
 ```sql
-SELECT
-    r.year, r.round, r.name AS race,
-    d.forename || ' ' || d.surname AS driver,
-    res.points,
-    SUM(res.points) OVER (
-        PARTITION BY r.year, res.driverId
-        ORDER BY r.round
-    ) AS cumulative_points
-FROM results res
-JOIN races r ON res.raceId = r.raceId
-JOIN drivers d ON res.driverId = d.driverId
-WHERE r.year = 2023
-ORDER BY r.round, cumulative_points DESC;
+SELECT 
+    ra.name AS race_name,
+    ra.round AS gp_round, 
+    d.surname AS driver,          
+    (p.milliseconds / 1000.0) AS stop_duration_secs,
+    AVG(p.milliseconds / 1000.0) OVER (
+        PARTITION BY p.driverId
+        ORDER BY ra.round, p.stop
+    ) AS ferrari_avg_duration_ytd
+FROM 
+    pitstops p
+    JOIN races ra ON p.raceId = ra.raceId
+    JOIN results re ON p.raceId = re.raceId AND p.driverId = re.driverId
+    JOIN constructors c ON re.constructorId = c.constructorId
+    JOIN drivers d ON p.driverId = d.driverId
+WHERE 
+    c.name = 'Ferrari'
+    AND ra.year = 2023
+    AND (p.milliseconds / 1000.0) < 60.0
+ORDER BY 
+    ra.round, 
+    p.stop;
 ```
 
-### 2. Top 3 Drivers by Wins per Season (RANK)
+### 2. Podium Points for First-Time Podium Finishers in 2023 (ROLLUP + NOT EXISTS)
 
-Ranks drivers by race wins within each season and keeps only the podium.
+Constructor and driver podium points for the 2023 season, restricted to drivers who reached the top 3 in 2023 but never did so in 2022. ROLLUP adds a subtotal row per constructor.
 
 ```sql
-SELECT year, driver, total_wins, rnk
-FROM (
-    SELECT
-        r.year,
-        d.forename || ' ' || d.surname AS driver,
-        COUNT(*) FILTER (WHERE res.position = 1) AS total_wins,
-        RANK() OVER (
-            PARTITION BY r.year
-            ORDER BY COUNT(*) FILTER (WHERE res.position = 1) DESC
-        ) AS rnk
-    FROM results res
-    JOIN races r ON res.raceId = r.raceId
-    JOIN drivers d ON res.driverId = d.driverId
-    GROUP BY r.year, d.driverId, d.forename, d.surname
-) t
-WHERE rnk <= 3
-ORDER BY year, rnk;
+SELECT 
+    c.name AS team_name,
+    d.surname AS driver_name,
+    SUM(re.points) AS podium_points
+FROM 
+    results re
+    JOIN races ra ON re.raceId = ra.raceId
+    JOIN constructors c ON re.constructorId = c.constructorId
+    JOIN drivers d ON re.driverId = d.driverId
+WHERE 
+    ra.year = 2023
+    AND re.positionOrder <= 3
+    AND NOT EXISTS (
+        SELECT 1
+        FROM results re_old
+        JOIN races ra_old ON re_old.raceId = ra_old.raceId
+        WHERE 
+            re_old.driverId = d.driverId  
+            AND ra_old.year = 2022
+            AND re_old.positionOrder <= 3
+    )
+GROUP BY 
+    ROLLUP(c.name, d.surname)
+ORDER BY 
+    c.name ASC, 
+    GROUPING(d.surname) ASC,
+    SUM(re.points) DESC;
 ```
 
-### 3. Constructor Points Year-over-Year (LAG)
+### 3. Hamilton 2023 — Places Gained per Race with LAG and Running Average (LAG + AVG)
 
-Compares each constructor's total season points against the previous year.
-
-```sql
-SELECT
-    c.name AS constructor,
-    year,
-    total_points,
-    LAG(total_points) OVER (PARTITION BY c.name ORDER BY year) AS prev_year_points,
-    total_points - LAG(total_points) OVER (PARTITION BY c.name ORDER BY year) AS diff
-FROM (
-    SELECT res.constructorId, r.year, SUM(res.points) AS total_points
-    FROM results res
-    JOIN races r ON res.raceId = r.raceId
-    GROUP BY res.constructorId, r.year
-) t
-JOIN constructors c ON t.constructorId = c.constructorId
-ORDER BY c.name, year;
-```
-
-### 4. Points by Year and Constructor with Subtotals (ROLLUP)
-
-Aggregates points at three levels: per constructor per year, per year total, and grand total.
+Start vs. finish position for each race, the change vs. the previous race, and the year-to-date running average of places gained.
 
 ```sql
-SELECT
-    COALESCE(r.year::TEXT, 'ALL') AS year,
-    COALESCE(c.name, 'ALL')       AS constructor,
-    SUM(res.points)               AS total_points
-FROM results res
-JOIN races r ON res.raceId = r.raceId
-JOIN constructors c ON res.constructorId = c.constructorId
-GROUP BY ROLLUP(r.year, c.name)
-ORDER BY r.year NULLS LAST, total_points DESC;
-```
-
-### 5. Average Positions Gained from Qualifying to Race Finish
-
-Shows which drivers consistently outperform their qualifying position on race day.
-
-```sql
-SELECT
-    r.year,
-    d.forename || ' ' || d.surname        AS driver,
-    ROUND(AVG(q.position)::numeric, 1)    AS avg_qualifying,
-    ROUND(AVG(res.positionOrder)::numeric, 1) AS avg_finish,
-    ROUND(AVG(q.position - res.positionOrder)::numeric, 1) AS avg_positions_gained
-FROM qualifying q
-JOIN results res ON q.raceId = res.raceId AND q.driverId = res.driverId
-JOIN races r     ON q.raceId = r.raceId
-JOIN drivers d   ON q.driverId = d.driverId
-WHERE q.position IS NOT NULL
-GROUP BY r.year, d.driverId, d.forename, d.surname
-HAVING COUNT(*) >= 5
-ORDER BY avg_positions_gained DESC;
+SELECT 
+    ra.round AS grand_prix_round,
+    ra.name AS race_name,
+    re.grid AS start_position,
+    re.positionOrder AS end_position,
+    (re.grid - re.positionOrder) AS gained_places,
+    (re.grid - re.positionOrder) - LAG(re.grid - re.positionOrder, 1) OVER w AS gain_diff_to_last_race,
+    ROUND(AVG(re.grid - re.positionOrder) OVER w, 2) AS avg_gained_ytd
+FROM 
+    results re
+    JOIN races ra ON re.raceId = ra.raceId
+    JOIN drivers d ON re.driverId = d.driverId
+WHERE 
+    d.surname = 'Hamilton'  
+    AND ra.year = 2023
+WINDOW w AS (
+    ORDER BY ra.round
+)
+ORDER BY 
+    ra.round;
 ```
 
 ## Project Structure
